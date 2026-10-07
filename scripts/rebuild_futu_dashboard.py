@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Recalculate the Futu breakout dashboard from symbol-named daily-bar JSON files.
+"""Recalculate a Futu breakout dashboard from symbol-named daily-bar JSON files.
 
-This script intentionally refreshes the existing reviewed 53-symbol universe only;
-it does not claim to rescreen all U.S. stocks or add new candidates.
+Refresh only the supplied reviewed fixed universe; this script does not discover
+or add candidates. Set --expected-count to the universe's exact row count.
 """
 import argparse
 import csv

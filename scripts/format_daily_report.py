@@ -28,7 +28,7 @@ def pct(value, signed=False):
     return f"{value:+.2f}%" if signed else f"{value:.2f}%"
 
 
-def render(rows, as_of, expected):
+def render(rows, as_of, expected, dashboard_url=""):
     if len(rows) != expected:
         raise ValueError(f"Expected {expected} metrics rows, received {len(rows)}")
     codes = [r.get("code", "").strip() for r in rows]
@@ -44,7 +44,7 @@ def render(rows, as_of, expected):
     lines = [
         f"## Futu 美股突破觀察 — {as_of}",
         "",
-        f"覆蓋 **{len(rows)} 檔固定普通股／ADR**；核心條件同時通過 **{passed} 檔**；收盤高於此前 20 日高點 **{breakouts} 檔**。",
+        f"覆蓋 **{len(rows)} 檔使用者設定的普通股／ADR**；核心條件同時通過 **{passed} 檔**；收盤高於此前 20 日高點 **{breakouts} 檔**。",
         "",
         "| 股票全名（代號） | 收盤 | 63日報酬 | ADR20 | 50日均成交額 | 高於SMA200 | 最窄整固 | 距前20日高點 | 收盤突破 | EMA三線均距 | 核心條件 | 未通過條件 |",
         "|---|---:|---:|---:|---:|---:|---:|---:|:---:|---:|:---:|---|",
@@ -72,10 +72,11 @@ def render(rows, as_of, expected):
         )
     lines.extend([
         "",
-        "**說明：** ADR20 為平均日內振幅，不是 Wilder ATR；負的「距前20日高點」代表收盤高於該高點。收盤越過前高僅是價位事件，未確認成交量或後續延續。此清單每日更新既有 53 檔，不是全美股市值篩選。",
+        f"**說明：** ADR20 為平均日內振幅，不是 Wilder ATR；負的「距前20日高點」代表收盤高於該高點。收盤越過前高僅是價位事件，未確認成交量或後續延續。此清單更新既有 {len(rows)} 檔，不是全美股市值篩選。",
         "",
-        "[開啟互動式 EMA／突破／回踩 dashboard](https://hoihoichristy.github.io/futu-breakout-dashboard/)",
     ])
+    if dashboard_url:
+        lines.append(f"[開啟互動式 EMA／突破／回踩 dashboard]({dashboard_url})")
     return "\n".join(lines) + "\n"
 
 
@@ -85,10 +86,11 @@ def main():
     ap.add_argument("--as-of", required=True, help="YYYY-MM-DD")
     ap.add_argument("--expected-count", type=int, default=53)
     ap.add_argument("--output", help="Write Markdown to this path; otherwise print to stdout")
+    ap.add_argument("--dashboard-url", default="", help="Optional public dashboard URL")
     args = ap.parse_args()
     with open(args.metrics, newline="", encoding="utf-8-sig") as stream:
         rows = list(csv.DictReader(stream))
-    report = render(rows, args.as_of, args.expected_count)
+    report = render(rows, args.as_of, args.expected_count, args.dashboard_url)
     if args.output:
         path = Path(args.output)
         path.parent.mkdir(parents=True, exist_ok=True)
