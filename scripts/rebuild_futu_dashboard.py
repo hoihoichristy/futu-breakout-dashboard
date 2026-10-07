@@ -72,6 +72,7 @@ def main():
     ap.add_argument("--output", required=True, help="Write to a temporary path, not the live repo file")
     ap.add_argument("--expected-count", type=int, default=53)
     ap.add_argument("--min-bars", type=int, default=200)
+    ap.add_argument("--metrics-output", help="Optional CSV path for the validated metrics table")
     args = ap.parse_args()
 
     universe = load_universe(args.universe, args.expected_count)
@@ -105,6 +106,19 @@ def main():
     if excluded or len(checked_rows) != args.expected_count:
         raise ValueError(f"Security-class validation changed the universe: kept={len(checked_rows)}, excluded={len(excluded)}")
 
+    if args.metrics_output:
+        metrics_path = Path(args.metrics_output)
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        with metrics_path.open("w", newline="", encoding="utf-8-sig") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(checked_rows[0].keys()))
+            writer.writeheader()
+            for checked in checked_rows:
+                row = dict(checked)
+                row["failures"] = "; ".join(failure for failure in
+                                             next(item["failures"] for item in rows if item["code"] == row["code"]))
+                row["rules"] = "; ".join("pass" if value else "fail" for value in row.get("rules", []))
+                writer.writerow(row)
+
     as_of = datetime.strptime(next(iter(set(latest_dates.values()))), "%Y%m%d").strftime("%Y-%m-%d")
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -120,6 +134,7 @@ def main():
         "price_breakouts": sum(bool(r["breakout_close"]) for r in checked_rows),
         "bars_per_symbol_min": min(len(v) for v in bars_by_code.values()),
         "output": str(out),
+        "metrics_output": args.metrics_output,
     }, ensure_ascii=False))
 
 
