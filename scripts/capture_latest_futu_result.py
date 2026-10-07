@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Capture the newest Futu quote_history_kline MCP result into a symbol-named JSON file.
+
+Call immediately after exactly one quote_history_kline call. The start timestamp and
+manifest prevent reusing historical or previously captured tool results.
+"""
+import argparse
+import json
+import os
+import shutil
+import sys
+import time
+from pathlib import Path
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--symbol", required=True, help="Futu symbol, e.g. US.MSFT")
+    ap.add_argument("--started-epoch", required=True, type=float,
+                    help="Unix timestamp recorded before this run's first Futu call")
+    ap.add_argument("--source-dir", default="/home/ubuntu/.mcp/tool-results")
+    ap.add_argument("--raw-dir", required=True)
+    ap.add_argument("--source-file", help="Optional exact result path returned by the MCP call")
+    ap.add_argument("--min-bars", type=int, default=200)
+    args = ap.parse_args()
+
+    raw_dir = Path(args.raw_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = raw_dir / ".capture_manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    if args.symbol in manifest:
+        raise SystemExit(f"Symbol already captured in this run: {args.symbol}")
+
+    if args.source_file:
+        candidates = [Path(args.source_file)]
+    else:
+        candidates = list(Path(args.source_dir).glob("*quote_history_kline*.json"))
+    candidates = [p for p in candidates if p.is_file() and p.stat().st_mtime >= args.started_epoch]
+    candidates = [p for p in candidates if str(p.resolve()) not in manifest.values()]
+    candidates.sort(key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+
+    selected = None
+    payload = None
+    problems = []
+    for path in candidates:
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+            ret_code = current.get("ret_code", 0)
+            if ret_code not in (0, "0", None):
+                problems.append(f"{path.name}: ret_code={ret_code}")
+                continue
+            bars = current.get("data", {}).get("kline_list", [])
+            if len(bars) < args.min_bars:
+                problems.append(f"{path.name}: only {len(bars)} bars")
+                continue
+            selected, payload = path, current
+            break
+        except (OSError, ValueError, TypeError) as exc:
+            problems.append(f"{path.name}: {exc}")
+
+    if selected is None:
+        detail = "; ".join(problems[-3:])
+        raise SystemExit(f"No fresh valid Futu K-line result for {args.symbol}. {detail}")
+
+    bars = sorted(payload["data"]["kline_list"], key=lambda b: str(b["date"]))
+    latest = bars[-1]
+    out = raw_dir / f"{args.symbol}.json"
+    out.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    manifest[args.symbol] = str(selected.resolve())
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    print(f"captured {args.symbol}: {len(bars)} bars; latest={latest.get('date')}; source={selected.name}")
+
+
+if __name__ == "__main__":
+    main()
