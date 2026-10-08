@@ -111,6 +111,8 @@ python3 scripts/format_daily_report.py \
   2>&1 | tee -a "$LOG_PATH"
 ```
 
+Before publishing, sync core-condition passes to the existing Futu watchlist group **`Watchlist US 02`** (the visible group corresponding to the requested Watchlist 02). Include only rows whose `core_status` is exactly `pass`; exclude failed and unverified rows. Use the exact Futu `code` values from this run's validated `$METRICS_PATH`, not names or guessed tickers. First query `quote_user_security(group_name="Watchlist US 02")`; compare codes and call `quote_modify_user_security(op="ADD", group_name="Watchlist US 02", code_list=[...])` only for missing symbols. Split into batches of at most 200 codes. This is additive only: never delete, move, or remove existing watchlist entries. If there are no passing symbols or no missing codes, log that no addition was needed. Record the pass count, already-present count, newly-added count, exact group name, and tool result in `LOG_PATH`. A watchlist query/add error stops publication and must be reported; do not claim a successful sync without a successful Futu response.
+
 Only after all dynamically screened symbols are accounted for, security types are checked, the exact metrics build succeeds, and the full variable-size Traditional Chinese table succeeds, run:
 
 ```bash
@@ -121,6 +123,6 @@ FUTU_BRANCH=main FUTU_LOG_PATH="$LOG_PATH" \
 
 The publisher updates only `index.html`, pushes to the existing GitHub Pages repository, and verifies the exact live HTML SHA-256. It must not push run logs, raw tool results, universe CSVs, credentials, or tokens. Record the resulting commit hash and whether the live hash/date was verified. A successful push without live verification is “部署中,” not complete.
 
-Report in Traditional Chinese: the screener's total and pages, number retained for analysis, securities excluded and reasons, the full metrics table ordered core-pass first then average EMA distance, common data date, core pass count, close-above-prior-20-high count, live-page verification, commit hash and URL. Clarify that the daily candidate set is selected by this dynamic Futu screen (not all >$5bn stocks have K-lines fetched), and that 60-day return / average amplitude were loose prefilters while exact 63-day return / ADR20 were recalculated. ADR20 is not Wilder ATR; no personalized investment advice.
+Report in Traditional Chinese: the screener's total and pages, number retained for analysis, securities excluded and reasons, the full metrics table ordered core-pass first then average EMA distance, common data date, core pass count, close-above-prior-20-high count, Watchlist US 02 new-addition and already-present counts, live-page verification, commit hash and URL. Clarify that the daily candidate set is selected by this dynamic Futu screen (not all >$5bn stocks have K-lines fetched), and that 60-day return / average amplitude were loose prefilters while exact 63-day return / ADR20 were recalculated. ADR20 is not Wilder ATR; no personalized investment advice.
 
 Log every screen page, basic-info batch, bar capture, build, report, publication and failure to `LOG_PATH`. Any error leaves the old live page unchanged and must identify the failed stage/symbol and current private log path.
