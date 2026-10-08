@@ -1,12 +1,16 @@
 # Futu Breakout Dashboard
 
-Self-contained interactive snapshot of the Futu U.S. common-stock/ADR screen.
+Self-contained Futu U.S. common-stock/ADR technical dashboard.
 
-- **Universe:** the 53 symbols in `universe.csv` (fixed list; daily refresh does not discover new candidates).
-- **Market data:** Futu daily K-lines, fetched by the connected Manus Futu connector.
-- **Schedule:** Manus runs after the prior U.S. close at 06:00 Asia/Hong_Kong Tuesday–Saturday; a successful `index.html` push to `main` triggers GitHub Pages publication.
+- **Fixed universe:** all 53 reviewed symbols in `universe.csv`; daily refresh never adds/removes symbols or scans the full market.
+- **Source:** Futu forward-adjusted regular-session daily K-lines, retrieved through the Manus Futu connector. No substitution with Yahoo or another source.
+- **Schedule:** 06:00 Asia/Hong_Kong Tuesday–Saturday, after the previous U.S. session. Manus updates `index.html`; GitHub Pages deploys `main:/`.
 - **Page:** https://hoihoichristy.github.io/futu-breakout-dashboard/
-- **Freshness:** the dashboard displays the latest common Futu trading date. The update aborts instead of replacing the page when any ticker is missing, the series is insufficient, or data dates disagree.
-- **No data-source substitution:** the GitHub-hosted runner cannot directly call the Manus-only Futu MCP connector; Futu retrieval is performed by Manus, while GitHub Pages serves the refreshed static HTML.
+- **Short history:** at least one valid daily bar is retained. Each indicator keeps its original lookback; unavailable values are null/unverified, not zero or shortened estimates, and cannot count as a complete core pass.
+- **Normal-trading freshness:** all normal-trading symbols must agree on their latest daily date. Missing symbols, invalid OHLC, failed source calls, other date mismatches and class failures abort the update.
+- **QMMM-only suspension exception:** the user authorized retaining QMMM's historical candles and last-trade date while a fresh Futu quote confirms `SUSPENDED`. Its current metrics remain unverified and are excluded from core/breakout counts and rankings. The normal common analysis date is not QMMM's historical date. If trading resumes, normal date validation applies again.
+- **Deployment verification:** the publisher checks the exact live HTML SHA-256, not merely a date string. Private run logs and raw source results are Git-ignored and never published.
 
-The embedded page is self-contained (including Plotly.js, the metrics and daily candles). A close above the prior 20-session high is only a price-level event, not confirmed breakout advice.
+The HTML embeds Plotly, all reviewed rows and dated candles for browser/offline use. ADR20 is average daily intraday range, not Wilder ATR. A close above the prior 20-session high is only a price-level event, not confirmed breakout or investment advice.
+
+See `DAILY_UPDATE.md` for the reproducible daily process.

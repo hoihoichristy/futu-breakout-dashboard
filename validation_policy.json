@@ -2,6 +2,9 @@
   "scope": "reviewed_universe",
   "default_min_bars": 1,
   "symbol_min_bars": {},
-  "short_history_behavior": "Retain valid available daily OHLC. Every indicator uses its original lookback; missing indicators remain null/unverified, never shortened or counted as a complete core pass.",
-  "authorization": "On 2026-10-08 08:22 HKT the user authorized the fixed 53-symbol universe to retain valid history below 64 bars (at least 1 bar). API failures, missing OHLC, inconsistent latest dates and security-class failures still stop publication. No additions or removals."
+  "suspension_date_exceptions": ["US.QMMM"],
+  "suspension_evidence_required": true,
+  "short_history_behavior": "Retain valid available daily OHLC. Every indicator keeps its original lookback; missing indicators remain null/unverified and never count as a complete core pass.",
+  "suspension_behavior": "Only US.QMMM may keep a differing historical date when this run's successful Futu quote_stock_quote explicitly confirms suspension=true and sec_status=SUSPENDED. Retain its row and original dated candles, null all current metrics, and exclude it from current statistics and rankings. All other symbols must still agree on their latest date. If QMMM resumes, the exception no longer applies.",
+  "authorization": "User authorized >=1 valid bar within the fixed 53-symbol universe on 2026-10-08 08:22 HKT, then explicitly authorized the QMMM-only suspension exception on 2026-10-08 08:47 HKT. No symbols may be added or removed; API errors, missing/invalid OHLC, other date mismatches and security-class failures still stop publication."
 }

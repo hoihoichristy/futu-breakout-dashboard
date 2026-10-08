@@ -73,9 +73,16 @@ def unverified_conditions(row):
     return labels
 
 
+def eligible(row):
+    value = boolean(row, "metric_eligible")
+    return value is not False and (row.get("market_status") or "ACTIVE").upper() != "SUSPENDED"
+
+
 def core_rules(row):
     """Seven core screening conditions as True, False, or None (unverified)."""
     base_pct, base_days = number(row, "best_base_pct"), number(row, "best_base_days")
+    if not eligible(row):
+        return (None,) * 7
     return (
         None if number(row, "return_63_pct") is None else number(row, "return_63_pct") >= 20,
         None if number(row, "close") is None else number(row, "close") > 5,
@@ -120,11 +127,16 @@ def validation_note(row):
     labels = unverified_conditions(row)
     summary = "未驗證：" + "；".join(labels) if labels else ""
     existing = (row.get("validation_note") or "").strip()
-    if existing and summary and all(label in existing for label in labels):
+    if existing and (not eligible(row) or not summary or all(label in existing for label in labels)):
         return existing
     if existing and summary:
         return f"{existing}；{summary}"
     return existing or summary or "—"
+
+
+def display_date(value):
+    text = str(value or '').replace('-', '')
+    return f'{text[:4]}-{text[4:6]}-{text[6:]}' if len(text) == 8 and text.isdigit() else '未驗證'
 
 
 def render(rows, as_of, expected, dashboard_url=""):
@@ -137,21 +149,25 @@ def render(rows, as_of, expected, dashboard_url=""):
     # Core passes are first; failures and unverified rows share the second tier.
     # Unknown EMA means always rank last within a tier.
     rows.sort(key=lambda r: (
-        core_status(r) != "pass",
-        number(r, "ema_mean_distance_pct") if number(r, "ema_mean_distance_pct") is not None else 1e9,
+        not (eligible(r) and core_status(r) == "pass"),
+        not eligible(r),
+        number(r, "ema_mean_distance_pct") if eligible(r) and number(r, "ema_mean_distance_pct") is not None else 1e9,
         r.get("name", ""),
         r.get("code", ""),
     ))
-    passed = sum(core_status(r) == "pass" for r in rows)
-    unverified = sum(core_status(r) == "unverified" for r in rows)
-    breakouts = sum(boolean(r, "breakout_close") is True for r in rows)
+    passed = sum(eligible(r) and core_status(r) == "pass" for r in rows)
+    unverified = sum(eligible(r) and core_status(r) == "unverified" for r in rows)
+    breakouts = sum(eligible(r) and boolean(r, "breakout_close") is True for r in rows)
+    normal = sum(eligible(r) for r in rows)
+    suspended = len(rows) - normal
+    common_dates = sorted({display_date(r.get("analysis_date", "")) for r in rows if eligible(r) and r.get("analysis_date")})
     lines = [
         f"## Futu 美股突破觀察 — {as_of}",
         "",
-        f"覆蓋 **{len(rows)} 檔使用者設定的普通股／ADR**；核心條件完整通過 **{passed} 檔**（不含 **{unverified} 檔**核心未驗證）；收盤高於此前 20 日高點 **{breakouts} 檔**（僅計入已驗證結果）。",
+        f"覆蓋 **{len(rows)} 檔使用者設定的普通股／ADR**（正常 **{normal}**、停牌 **{suspended}**）；正常交易核心條件完整通過 **{passed} 檔**（另有 **{unverified} 檔**核心未驗證）；收盤高於此前 20 日高點 **{breakouts} 檔**（僅計入正常且已驗證結果）。共同分析日：**{', '.join(common_dates) if common_dates else as_of}**。",
         "",
-        "| 股票全名（代號） | K線根數 | 收盤 | 63日報酬 | ADR20 | 50日均成交額 | 高於SMA200 | 最窄整固 | 距前20日高點 | 收盤突破 | EMA三線均距 | 核心條件 | 未驗證項目 | 驗證註記 | 未通過條件 |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|:---:|---:|:---:|---|---|---|",
+        "| 股票全名（代號） | 資料日 | 交易狀態 | K線根數 | 收盤 | 63日報酬 | ADR20 | 50日均成交額 | 高於SMA200 | 最窄整固 | 距前20日高點 | 收盤突破 | EMA三線均距 | 核心條件 | 未驗證項目 | 驗證註記 | 未通過條件 |",
+        "|---|---|:---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|---:|:---:|---|---|---|",
     ]
     for r in rows:
         close = number(r, "close")
@@ -163,12 +179,14 @@ def render(rows, as_of, expected, dashboard_url=""):
         failures = "、".join(confirmed_failures(r)) or "—"
         breakout = boolean(r, "breakout_close")
         base = "未驗證" if base_pct is None or base_days is None else f"{base_days:.0f}日/{base_pct:.2f}%"
-        close_text = "未驗證" if close is None else f"${close:.2f}"
+        suspended_row = not eligible(r)
+        historical_close = number(r, "historical_close")
+        close_text = (f"歷史 ${historical_close:.2f}" if suspended_row and historical_close is not None else "未驗證") if suspended_row else ("未驗證" if close is None else f"${close:.2f}")
         bars_text = "未驗證" if bars is None else f"{bars:.0f}根"
         unknown = "；".join(unverified_conditions(r)) or "—"
         note = validation_note(r)
         lines.append(
-            f"| {r.get('name', '')} ({r['code']}) | {bars_text} | {close_text} | "
+            f"| {r.get('name', '')} ({r['code']}) | {display_date(r.get('date'))} | {'停牌' if suspended_row else '正常'} | {bars_text} | {close_text} | "
             f"{pct(number(r, 'return_63_pct'), True)} | {pct(number(r, 'adr20_pct'))} | "
             f"{'未驗證' if turnover is None else f'${turnover / 1e6:.1f}m'} | "
             f"{sma200_text(r)} | {base} | {pct(number(r, 'trigger_gap_pct'), True)} | "
@@ -176,7 +194,7 @@ def render(rows, as_of, expected, dashboard_url=""):
         )
     lines.extend([
         "",
-        f"**說明：** ADR20 為平均日內振幅，不是 Wilder ATR；負的「距前20日高點」代表收盤高於該高點。收盤越過前高僅是價位事件，未確認成交量或後續延續。依使用者授權，固定清單中每檔只要至少 1 根有效日 K 即保留；但63日報酬須64根、ADR20須20根、50日均成交額須50根且資料完整、SMA200須200根、整固須5根、前20日高低點及突破須21根，EMA10／20／50亦各須相應根數。未達各自門檻者一律標示「未驗證」，不以較短歷史代替，且不計入完整核心通過。此清單更新既有 {len(rows)} 檔，不是全美股市值篩選。",
+        f"**說明：** 停牌列保留自身最後日線日期與歷史收盤價；停牌時所有當前指標均未驗證、不列假失敗，核心／突破統計只計正常交易且符合驗證條件的列。ADR20 為平均日內振幅，不是 Wilder ATR；負的「距前20日高點」代表收盤高於該高點。收盤越過前高僅是價位事件，未確認成交量或後續延續。依使用者授權，固定清單中每檔只要至少 1 根有效日 K 即保留；但63日報酬須64根、ADR20須20根、50日均成交額須50根且資料完整、SMA200須200根、整固須5根、前20日高低點及突破須21根，EMA10／20／50亦各須相應根數。未達各自門檻者一律標示「未驗證」，不以較短歷史代替，且不計入完整核心通過。此清單更新既有 {len(rows)} 檔，不是全美股市值篩選。",
         "",
     ])
     if dashboard_url:
