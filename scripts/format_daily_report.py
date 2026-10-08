@@ -66,9 +66,8 @@ def render(rows, as_of, expected, dashboard_url=""):
         raise ValueError("Missing or duplicate stock codes in metrics CSV")
 
     # Preserve core-pass priority, then rank by the existing three-EMA mean distance.
-    status_rank = {"pass": 0, "fail": 1, "unverified": 2}
     rows.sort(key=lambda r: (
-        status_rank[core_status(r)],
+        core_status(r) != "pass",
         number(r, "ema_mean_distance_pct") if number(r, "ema_mean_distance_pct") is not None else 1e9,
         abs(number(r, "trigger_gap_pct") or 0),
     ))
@@ -106,7 +105,7 @@ def render(rows, as_of, expected, dashboard_url=""):
         )
     lines.extend([
         "",
-        f"**說明：** ADR20 為平均日內振幅，不是 Wilder ATR；負的「距前20日高點」代表收盤高於該高點。收盤越過前高僅是價位事件，未確認成交量或後續延續。依本次短歷史例外，US.PS 日 K 至少 64 根但未滿 200 根可保留；此類 SMA200 一律標示「未驗證」，不以較短歷史平均替代，也不計入核心通過。此清單更新既有 {len(rows)} 檔，不是全美股市值篩選。",
+        f"**說明：** ADR20 為平均日內振幅，不是 Wilder ATR；負的「距前20日高點」代表收盤高於該高點。收盤越過前高僅是價位事件，未確認成交量或後續延續。固定清單中所有股票日 K 至少 64 根但未滿 200 根均可保留；此類 SMA200 一律標示「未驗證」，不以較短歷史平均替代，也不計入完整核心通過。此清單更新既有 {len(rows)} 檔，不是全美股市值篩選。",
         "",
     ])
     if dashboard_url:
