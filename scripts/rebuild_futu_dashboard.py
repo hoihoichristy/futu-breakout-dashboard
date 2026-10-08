@@ -7,6 +7,7 @@ or add candidates. Set --expected-count to the universe's exact row count.
 import argparse
 import csv
 import json
+import math
 import sys
 import tempfile
 from collections import Counter
@@ -59,8 +60,11 @@ def load_symbol_bars(raw_dir, symbol, min_bars):
         by_date[date] = bar
     bars = [by_date[d] for d in sorted(by_date)]
     for bar in bars:
-        for field in ("open", "high", "low", "close"):
-            float(bar[field])
+        prices = {field: float(bar[field]) for field in ("open", "high", "low", "close")}
+        if not all(math.isfinite(v) and v > 0 for v in prices.values()):
+            raise ValueError(f"{symbol}: invalid OHLC on {bar['date']}")
+        if prices['high'] < prices['low']:
+            raise ValueError(f"{symbol}: high below low on {bar['date']}")
     if len(bars) < min_bars:
         raise ValueError(f"{symbol}: only {len(bars)} unique dated bars")
     return bars, normalize_date(bars[-1]["date"])
@@ -89,14 +93,19 @@ def main():
         row["core_status"] = "pass" if row["pass_core"] else "fail"
         row["unverified_conditions"] = ""
         row["validation_note"] = ""
-        if len(bars) < 200:
-            row["above_sma200_pct"] = None
+        indicator_labels = {
+            "return_63_pct": "63日報酬", "adr20_pct": "ADR20", "turnover50": "50日均成交額",
+            "above_sma200_pct": "SMA200", "best_base_pct": "5–39日整固",
+            "prior20_high": "前20日高低點／突破", "ema10": "EMA10", "ema20": "EMA20", "ema50": "EMA50",
+        }
+        missing = [label for field, label in indicator_labels.items() if row.get(field) is None]
+        if row["unknown_tests"]:
             row["pass_core"] = False
             row["core_status"] = "unverified"
-            row["unverified_conditions"] = "SMA200"
+        if missing:
+            row["unverified_conditions"] = "; ".join(missing)
             row["validation_note"] = (f"{meta['code']} 只有 {len(bars)} 根日線；"
-                                      "使用現有歷史計算可用指標，SMA200 未驗證；EMA 熱身期較短。")
-            row["failures"] = [v for v in row["failures"] if v != "200d cap"] + ["SMA200 unavailable"]
+                                      f"未驗證：{'、'.join(missing)}；不縮短指標期間，EMA 使用現有歷史種子。")
         rows.append(row)
         bars_by_code[meta["code"]] = [{
             "date": normalize_date(b["date"]), "open": float(b["open"]),

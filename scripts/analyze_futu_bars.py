@@ -51,8 +51,8 @@ def analyze(name, bars):
     result["adr20_pct"] = statistics.mean(
         (float(bar["high"]) - float(bar["low"])) / float(bar["close"]) * 100 for bar in bars[-20:]
     ) if len(bars) >= 20 else None
-    turnovers = [float(bar.get("turnover", 0) or 0) for bar in bars[-50:]]
-    result["turnover50"] = statistics.mean(turnovers) if len(turnovers) == 50 else None
+    turnovers = [float(bar["turnover"]) if bar.get("turnover") is not None else None for bar in bars[-50:]]
+    result["turnover50"] = statistics.mean(turnovers) if len(turnovers) == 50 and all(v is not None for v in turnovers) else None
     result["above_sma200_pct"] = (
         (close / statistics.mean(closes[-200:]) - 1) * 100 if len(closes) >= 200 else None
     )
@@ -78,26 +78,18 @@ def analyze(name, bars):
         result[f"ema{period}_distance_pct"] = (
             abs(close / result[f"ema{period}"] - 1) * 100 if result[f"ema{period}"] else None
         )
-    result["pass_core"] = all([
-        result["return_63_pct"] is not None and result["return_63_pct"] >= 20,
-        close > 5,
-        result["turnover50"] is not None and result["turnover50"] > 5_000_000,
-        result["adr20_pct"] is not None and result["adr20_pct"] > 3.5,
-        result["above_sma200_pct"] is not None and result["above_sma200_pct"] <= 60,
-        result["best_base_pct"] is not None and result["best_base_pct"] < 8,
-        result["above_prior20_low"] is True,
-    ])
-    failures = []
     tests = [
-        (result["return_63_pct"] is not None and result["return_63_pct"] >= 20, "3m return"),
+        (None if result["return_63_pct"] is None else result["return_63_pct"] >= 20, "3m return"),
         (close > 5, "price"),
-        (result["turnover50"] is not None and result["turnover50"] > 5_000_000, "50d turnover"),
-        (result["adr20_pct"] is not None and result["adr20_pct"] > 3.5, "ADR20"),
-        (result["above_sma200_pct"] is not None and result["above_sma200_pct"] <= 60, "200d cap"),
-        (result["best_base_pct"] is not None and result["best_base_pct"] < 8, "base width"),
-        (result["above_prior20_low"] is True, "above prior 20d low"),
+        (None if result["turnover50"] is None else result["turnover50"] > 5_000_000, "50d turnover"),
+        (None if result["adr20_pct"] is None else result["adr20_pct"] > 3.5, "ADR20"),
+        (None if result["above_sma200_pct"] is None else result["above_sma200_pct"] <= 60, "200d cap"),
+        (None if result["best_base_pct"] is None else result["best_base_pct"] < 8, "base width"),
+        (result["above_prior20_low"], "above prior 20d low"),
     ]
-    result["failures"] = [label for passed, label in tests if not passed]
+    result["pass_core"] = all(passed is True for passed, _ in tests)
+    result["failures"] = [label for passed, label in tests if passed is False]
+    result["unknown_tests"] = [label for passed, label in tests if passed is None]
     return result
 
 

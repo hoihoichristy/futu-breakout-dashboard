@@ -45,7 +45,7 @@ python3 scripts/capture_latest_futu_result.py \
   >> "$LOG_PATH" 2>&1
 ```
 
-If the tool response gives an exact saved result path, add `--source-file '/path/from/result.json'`. The helper rejects results created before this run, duplicate result files, API errors, and histories below the policy in `validation_policy.json`. **All 53 symbols in the fixed reviewed universe are authorized to use at least 64 unique daily bars, retaining all available history.** This policy applies only to the reviewed universe, not any additional stock. Histories below 64 bars or other data failures still stop publication.
+If the tool response gives an exact saved result path, add `--source-file '/path/from/result.json'`. The helper rejects results created before this run, duplicate result files, API errors and empty history. **All 53 symbols in the fixed reviewed universe may retain at least 1 valid unique daily bar**, including history below 64 bars. This user-authorized retention policy applies only to the reviewed universe. Missing/invalid OHLC, API errors, class failures or inconsistent latest dates still stop publication. Never pad history or reuse a previous run's data.
 
 ## 3. Rebuild and validate
 
@@ -56,7 +56,7 @@ python3 scripts/rebuild_futu_dashboard.py \
   --expected-count 53 2>&1 | tee -a "$LOG_PATH"
 ```
 
-The rebuild recalculates the same screen metrics and charts from Futu OHLCV; it preserves each symbol's reviewed security class. It refuses to publish unless all 53 files are present, each has at least 64 unique bars, the latest bar dates agree, and the class filter still retains all 53. **Any stock below 200 bars** has `above_sma200_pct=null`, `core_status=unverified`, and `pass_core=false`: never replace SMA200 with a shorter-history mean or count it as a full core pass. The dashboard/report must show actual bar count, short EMA warm-up caveat and unverified SMA200 state. Normal SMA200 validation automatically resumes when 200 bars become available. It writes the validated daily table to `metrics.csv`. Use the returned JSON `as_of` value as the publication date, then render the user-facing table:
+The rebuild recalculates unchanged indicator definitions, preserving every reviewed security class. All 53 symbol files must contain valid OHLC and agree on the latest date, and the class filter must retain all 53. Each indicator has its own minimum: return63=64 bars, ADR20=20, turnover50=50 with complete turnover, SMA200=200, consolidation=5, prior20 high/low and breakout=21, EMA10/20/50=10/20/50. Missing indicators remain null/unverified; do not shorten their lookbacks, synthesize older bars, or mark unknown conditions as failures. Any unknown core test makes `core_status=unverified` and `pass_core=false`. Do not draw unavailable EMA or prior-20 breakout lines. Known failed conditions remain separate from unknown conditions. The dashboard/report must show actual bar count and unknown indicators. Indicators become verified automatically as sufficient history accumulates. Use the returned JSON `as_of` value as the publication date, then render the user-facing table:
 
 ```bash
 python3 scripts/format_daily_report.py \

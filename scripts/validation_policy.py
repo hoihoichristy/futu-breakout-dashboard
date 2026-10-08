@@ -9,8 +9,8 @@ POLICY_PATH = ROOT / 'validation_policy.json'
 def minimum_bars(symbol, fallback=200):
     policy = json.loads(POLICY_PATH.read_text(encoding='utf-8')) if POLICY_PATH.exists() else {}
     base = int(policy.get('default_min_bars', fallback))
-    if base < 64 or base > 200:
-        raise ValueError('History policy minimum must be 64–200')
+    if base < 1 or base > 200:
+        raise ValueError('History retention minimum must be 1–200; indicator lookbacks are unchanged')
     if base < 200:
         if policy.get('scope') != 'reviewed_universe':
             raise ValueError('Short-history policy must explicitly restrict its scope to the reviewed universe')
@@ -19,6 +19,6 @@ def minimum_bars(symbol, fallback=200):
         if symbol not in codes:
             return 200
     value = int(policy.get('symbol_min_bars', {}).get(symbol, base))
-    if value < 64 or value > 200:
-        raise ValueError('Per-symbol history minimum must be 64–200')
+    if value < 1 or value > 200:
+        raise ValueError('Per-symbol history retention minimum must be 1–200')
     return value

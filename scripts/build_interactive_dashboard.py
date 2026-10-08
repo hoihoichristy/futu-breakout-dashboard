@@ -24,6 +24,17 @@ LABELS = {
 }
 RULES = ["63日報酬≥20%", "股價>$5", "50日均成交額>$5m", "ADR20>3.5%",
          "高於SMA200≤60%", "整固幅度<8%", "收盤≥前20日低點"]
+CORE_FAILURE_KEYS = ["3m return", "price", "50d turnover", "ADR20", "200d cap", "base width", "above prior 20d low"]
+CORE_MISSING_LABELS = ["63日報酬", "收盤價", "50日均成交額", "ADR20", "SMA200", "整固幅度", "前20日低點"]
+EXTRA_MISSING_FIELDS = {
+    "prior20_high": "前20日高點／突破",
+    "breakout_close": "前20日高點／突破",
+    "prior20_low": "前20日低點",
+    "above_prior20_low": "前20日低點",
+    "ema10": "EMA10", "ema10_distance_pct": "EMA10",
+    "ema20": "EMA20", "ema20_distance_pct": "EMA20",
+    "ema50": "EMA50", "ema50_distance_pct": "EMA50",
+}
 EXCLUDED_CLASS_TOKENS = ("ETF", "PREFERRED", "PREFERENCE", "PREF", "PFD", "優先股", "优先股", "CDI", "CEF", "CLOSED-END", "WARRANT", "RIGHT", "UNIT", "FUND")
 ALLOWED_CLASS_TOKENS = ("COMMON", "ORDINARY", "普通股", "ADR", "ADS")
 
@@ -37,7 +48,25 @@ def as_float(value):
 
 
 def as_bool(value):
-    return str(value).strip().lower() in ("true", "1", "yes", "y")
+    if value is None or str(value).strip() == "":
+        return None
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "y"):
+        return True
+    if text in ("false", "0", "no", "n"):
+        return False
+    return None
+
+
+def append_unique(items, values):
+    for value in values:
+        if value and value not in items:
+            items.append(value)
+    return items
+
+
+def split_conditions(value):
+    return [part.strip() for part in (value or "").split(";") if part.strip()]
 
 
 def load_metrics(path, common_adr_only=False):
@@ -55,13 +84,7 @@ def load_metrics(path, common_adr_only=False):
             if key in row:
                 row[key] = as_float(row[key])
         for key in ("above_prior20_low", "breakout_close", "pass_core"):
-            row[key] = as_bool(row.get(key, False))
-        raw_status = (row.get("core_status") or "").strip().lower()
-        row["core_status"] = raw_status if raw_status in ("pass", "fail", "unverified") else ("pass" if row["pass_core"] else "fail")
-        # core_status is authoritative: an unverified SMA200 result must never be rendered as a pass.
-        row["pass_core"] = row["core_status"] == "pass"
-        row["validation_note"] = (row.get("validation_note") or "").strip()
-        row["unverified_conditions"] = (row.get("unverified_conditions") or "").strip()
+            row[key] = as_bool(row.get(key))
         instrument = (row.get("Futu_security_type") or row.get("instrument_type") or "").upper()
         security_class = (row.get("US_listing_class") or row.get("security_class") or "").upper()
         if common_adr_only:
@@ -75,16 +98,30 @@ def load_metrics(path, common_adr_only=False):
                 continue
         ds = [row.get(k) for k in ("ema10_distance_pct", "ema20_distance_pct", "ema50_distance_pct")]
         row["ema_mean_distance_pct"] = sum(ds) / 3 if all(v is not None for v in ds) else None
-        row["failures"] = row.get("failures", "")
+        base_available = row.get("best_base_pct") is not None and row.get("best_base_days") is not None
         row["rules"] = [
-            row.get("return_63_pct") is not None and row["return_63_pct"] >= 20,
-            row.get("close") is not None and row["close"] > 5,
-            row.get("turnover50") is not None and row["turnover50"] > 5_000_000,
-            row.get("adr20_pct") is not None and row["adr20_pct"] > 3.5,
+            None if row.get("return_63_pct") is None else row["return_63_pct"] >= 20,
+            None if row.get("close") is None else row["close"] > 5,
+            None if row.get("turnover50") is None else row["turnover50"] > 5_000_000,
+            None if row.get("adr20_pct") is None else row["adr20_pct"] > 3.5,
             None if row.get("above_sma200_pct") is None else row["above_sma200_pct"] <= 60,
-            row.get("best_base_pct") is not None and row["best_base_pct"] < 8,
-            row.get("above_prior20_low", False),
+            None if not base_available else row["best_base_pct"] < 8,
+            row.get("above_prior20_low"),
         ]
+        missing = [label for value, label in zip(row["rules"], CORE_MISSING_LABELS) if value is None]
+        for field, label in EXTRA_MISSING_FIELDS.items():
+            if row.get(field) is None:
+                append_unique(missing, [label])
+        conditions = append_unique(split_conditions(row.get("unverified_conditions")), missing)
+        row["unverified_conditions"] = "; ".join(conditions)
+        existing_note = (row.get("validation_note") or "").strip()
+        missing_note = "未驗證：" + "；".join(conditions) if conditions else ""
+        row["validation_note"] = missing_note if missing_note else existing_note
+        # An unknown core condition always makes the aggregate unverified, even when
+        # another known condition has failed.  Only known false rules enter failures.
+        row["core_status"] = "unverified" if any(value is None for value in row["rules"]) else ("pass" if all(row["rules"]) else "fail")
+        row["pass_core"] = row["core_status"] == "pass"
+        row["failures"] = ";".join(key for key, value in zip(CORE_FAILURE_KEYS, row["rules"]) if value is False)
         kept.append(row)
     if common_adr_only and not kept:
         raise ValueError("No rows remained after common-stock/ADR classification")
@@ -140,26 +177,29 @@ def build_html(rows, bars, title, as_of):
 <section class="panel"><h2>指標散點比較</h2><p class="hint">切換 X/Y 指標；綠色為核心條件通過，橙色為價格收盤高於前 20 日高點但未通過全部核心條件，灰色為核心未完整驗證或其他；紫色外框為 EMA 前五名。</p><div class="controls"><label>X 軸 <select id="xsel"></select></label><label>Y 軸 <select id="ysel"></select></label><label class="toggle"><input type="checkbox" id="passonly">只看核心通過</label></div><div id="scatter"></div></section>
 <section class="grid"><div class="panel"><h2>各條件通過矩陣</h2><p class="hint">綠色為通過；紅色為未通過；灰色為資料不足／未驗證。</p><div id="heat"></div></div><div class="panel"><h2>依單一指標排序</h2><div class="controls"><label>排序指標 <select id="rankSel"></select></label></div><div id="bars"></div></div></section>
 <section class="panel"><h2>股票明細</h2><div class="controls"><input id="search" placeholder="搜尋股票名稱或代號…"><label class="toggle"><input type="checkbox" id="tablepass">只看核心通過</label></div><div class="tablewrap"><table id="tbl"><thead></thead><tbody></tbody></table></div></section>
-<div class="foot"><b>口徑：</b>ADR20 是平均 (high-low)/close，不是 Wilder ATR。整固幅度為尾端 5–39 根日 K 中最窄高低區間。突破觸發價為前 20 個已完成交易日最高價。依本次使用者條件計算核心 pass/fail；公司類別以 Futu basicinfo + 明確股票類型核驗。部分名稱或 ADR/OTC 股須以原始商品資料核對。圖表及目標線僅為研究視覺化，不構成投資建議。<br><b>短歷史例外：</b>依本次授權，US.PS 日 K 至少 64 根但未滿 200 根仍可保留；SMA200 不以短歷史均線代替，標示為未驗證並不計入核心通過。<br><b>資料覆蓋：</b>只包含此次實際取得並驗證的候選股票，不應宣稱為全市場完整掃描。</div></main><script>
+<div class="foot"><b>口徑：</b>ADR20 是平均 (high-low)/close，不是 Wilder ATR。整固幅度為尾端 5–39 根日 K 中最窄高低區間。突破觸發價為前 20 個已完成交易日最高價。依本次使用者條件計算核心 pass/fail；公司類別以 Futu basicinfo + 明確股票類型核驗。部分名稱或 ADR/OTC 股須以原始商品資料核對。圖表及目標線僅為研究視覺化，不構成投資建議。<br><b>樣本門檻：</b>依本次授權，固定清單任一股票只要至少 1 根有效日 K 即保留；但每項指標獨立驗證：63日報酬至少64根、ADR20至少20根、50日均成交額至少50根且成交額完整、SMA200至少200根、整固至少5根、前20日高低點及突破至少21根，EMA10／20／50亦各須達相應根數。未達門檻一律標示「未驗證」，不以縮短歷史推估，且不計入完整核心通過。<br><b>資料覆蓋：</b>只包含此次實際取得並驗證的候選股票，不應宣稱為全市場完整掃描。</div></main><script>
 const D=__DATA__;const B=__BARS__;const L=__LABELS__;const R=__RULES__;
 function coreStatus(d){return ['pass','fail','unverified'].includes(d.core_status)?d.core_status:(d.pass_core?'pass':'fail')}
-function coreRank(d){return coreStatus(d)==='pass'?0:coreStatus(d)==='fail'?1:2}
-function coreLabel(d){return coreStatus(d)==='pass'?'通過':coreStatus(d)==='unverified'?'未完整驗證':'未通過'}
+function coreRank(d){return coreStatus(d)==='pass'?0:1}
+function coreLabel(d){return coreStatus(d)==='pass'?'通過':coreStatus(d)==='unverified'?'未驗證':'未通過'}
 function coreClass(d){return coreStatus(d)==='pass'?'pass':coreStatus(d)==='unverified'?'unverified':'fail'}
-function emaMean(d){let v=Number(d.ema_mean_distance_pct);return d.ema_mean_distance_pct!=null&&Number.isFinite(v)?v:1e9}
+function finiteNumber(v){let n=Number(v);return v!==null&&v!==''&&Number.isFinite(n)?n:null}
+function emaMean(d){let v=finiteNumber(d.ema_mean_distance_pct);return v===null?1e9:v}
 function byCoreThenEma(a,b){return coreRank(a)-coreRank(b)||emaMean(a)-emaMean(b)||(a.name||'').localeCompare(b.name||'')}
-function isSmaUnverified(d){return String(d.unverified_conditions||'').toUpperCase().includes('SMA200')||(coreStatus(d)==='unverified'&&d.above_sma200_pct==null)}
-function historyBars(d,series){let v=Number(d.bars);return d.bars!=null&&Number.isFinite(v)&&v>0?v:series.length}
-const n=D.length,passes=D.filter(d=>coreStatus(d)==='pass').length,unverified=D.filter(d=>coreStatus(d)==='unverified').length,breakouts=D.filter(d=>d.breakout_close).length,shortHistory=D.filter(d=>isSmaUnverified(d));const top5=[...D].filter(d=>emaMean(d)<1e9).sort((a,b)=>emaMean(a)-emaMean(b)).slice(0,5),topNames=new Set(top5.map(d=>d.name));
-document.getElementById('cards').innerHTML=[['篩選股票',n,'按指定證券類別過濾後'],['核心條件通過',passes,unverified?`不含 ${unverified} 檔核心未完整驗證`:'所有已計算核心條件同時成立'],['價格突破',breakouts,'收盤高於前20日高點，不等於確認'],['資料截點','__ASOF__','逐股日期見明細']].map(x=>`<div class="card"><div class="k">${x[0]}</div><div class="v">${x[1]}</div><div class="sub">${x[2]}</div></div>`).join('');
-if(shortHistory.length){let alert=document.getElementById('historyAlert');alert.classList.add('show');alert.textContent=`短歷史警告：${shortHistory.length} 檔未達 200 根日 K，SMA200 未驗證，未計入核心通過；各標的實際根數與驗證註記請見明細。`}
-function format(k,v){if(v==null||v==='')return '無資料';if(typeof v==='number'&&!Number.isFinite(v))return '無資料';if(typeof v==='string')return v;if(k==='turnover50')return '$'+(v/1e6).toFixed(1)+'m';if(['close','ema10','ema20','ema50'].includes(k))return '$'+Number(v).toFixed(2);if(k==='best_base_days'||k==='bars')return Number(v).toFixed(0);return Number(v).toFixed(2)+'%'}function axisVal(d,k){return k==='turnover50'?d[k]/1e6:d[k]}function fill(id,keys,def){let e=document.getElementById(id);e.innerHTML=keys.map(k=>`<option value="${k}">${L[k]||k}</option>`).join('');e.value=def}const metrics=['return_63_pct','adr20_pct','turnover50','above_sma200_pct','best_base_pct','trigger_gap_pct','ema10_distance_pct','ema20_distance_pct','ema50_distance_pct','close'];fill('xsel',metrics,'best_base_pct');fill('ysel',metrics,'adr20_pct');fill('rankSel',metrics,'return_63_pct');
+function addUnique(a,v){if(v&&!a.includes(v))a.push(v);return a}
+function unverifiedFields(d){return String(d.unverified_conditions||'').split(';').map(v=>v.trim()).filter(Boolean)}
+function historyBars(d,series){let v=finiteNumber(d.bars);return v!==null&&v>0?v:series.length}
+function missingForChart(d,series){let fields=unverifiedFields(d);[10,20,50].forEach(p=>{if(!(series.length>=p&&finiteNumber(d['ema'+p])!==null))addUnique(fields,'EMA'+p)});if(!(series.length>=21&&finiteNumber(d.prior20_high)!==null&&(d.breakout_close===true||d.breakout_close===false)))addUnique(fields,'前20日高點／突破');if(!(series.length>=21&&finiteNumber(d.prior20_low)!==null&&(d.above_prior20_low===true||d.above_prior20_low===false)))addUnique(fields,'前20日低點');return fields}
+const n=D.length,passes=D.filter(d=>coreStatus(d)==='pass').length,unverified=D.filter(d=>coreStatus(d)==='unverified').length,breakouts=D.filter(d=>d.breakout_close===true).length,needsVerification=D.filter(d=>coreStatus(d)==='unverified'||unverifiedFields(d).length),top5=[...D].filter(d=>emaMean(d)<1e9).sort((a,b)=>emaMean(a)-emaMean(b)).slice(0,5),topNames=new Set(top5.map(d=>d.name));
+document.getElementById('cards').innerHTML=[['篩選股票',n,'按指定證券類別過濾後'],['核心條件通過',passes,unverified?`不含 ${unverified} 檔核心未驗證`:'所有核心條件完整驗證且同時成立'],['價格突破',breakouts,'僅計入已驗證的收盤高於前20日高點'],['資料截點','__ASOF__','逐股日期見明細']].map(x=>`<div class="card"><div class="k">${x[0]}</div><div class="v">${x[1]}</div><div class="sub">${x[2]}</div></div>`).join('');
+if(needsVerification.length){let alert=document.getElementById('historyAlert'),sample=needsVerification.slice(0,8).map(d=>`${d.name}（${unverifiedFields(d).join('；')||'核心條件'}）`).join('、'),more=needsVerification.length>8?`等 ${needsVerification.length} 檔`:' ';alert.classList.add('show');alert.textContent=`資料不足／未驗證：${sample}${more}。固定清單只要有至少 1 根有效日 K 即保留；各指標仍須各自達到樣本門檻，未達者不以短期資料替代。`}
+function format(k,v){let n=finiteNumber(v);if(v==null||v===''||n===null)return '未驗證';if(typeof v==='string')return v;if(k==='turnover50')return '$'+(n/1e6).toFixed(1)+'m';if(['close','ema10','ema20','ema50'].includes(k))return '$'+n.toFixed(2);if(k==='best_base_days'||k==='bars')return n.toFixed(0);return n.toFixed(2)+'%'}function axisVal(d,k){let v=finiteNumber(d[k]);return v===null?null:(k==='turnover50'?v/1e6:v)}function fill(id,keys,def){let e=document.getElementById(id);e.innerHTML=keys.map(k=>`<option value="${k}">${L[k]||k}</option>`).join('');e.value=def}const metrics=['return_63_pct','adr20_pct','turnover50','above_sma200_pct','best_base_pct','trigger_gap_pct','ema10_distance_pct','ema20_distance_pct','ema50_distance_pct','close'];fill('xsel',metrics,'best_base_pct');fill('ysel',metrics,'adr20_pct');fill('rankSel',metrics,'return_63_pct');
 function drawTop(){document.getElementById('emaTop5').innerHTML='<table><thead><tr><th>排名</th><th>股票</th><th>EMA10 距離</th><th>EMA20 距離</th><th>EMA50 距離</th><th>平均</th></tr></thead><tbody>'+top5.map((d,i)=>`<tr class="top-ema-row"><td>#${i+1}</td><td><b>${d.name} (${d.code})</b></td><td>${d.ema10_distance_pct.toFixed(2)}%</td><td>${d.ema20_distance_pct.toFixed(2)}%</td><td>${d.ema50_distance_pct.toFixed(2)}%</td><td><b>${d.ema_mean_distance_pct.toFixed(2)}%</b></td></tr>`).join('')+'</tbody></table>'}
-function ema(a,p){if(!a.length)return [];let o=[a[0]],k=2/(p+1);for(let i=1;i<a.length;i++)o.push(a[i]*k+o[i-1]*(1-k));return o}function drawBreakout(){let code=chartSel.value,all=chartAll.checked,full=B[code]||[],row=D.find(x=>x.code===code),chartNote=document.getElementById('chartNotice');if(!full.length||!row){chartNote.classList.remove('show');return}let barCount=historyBars(row,full),smaUnverified=isSmaUnverified(row),shortWarmup=barCount<200;if(shortWarmup||smaUnverified){chartNote.classList.add('show');chartNote.textContent=`短歷史警告：${row.name} 有 ${barCount} 根日 K。${smaUnverified?'SMA200 未驗證，核心狀態為未完整驗證；':''}EMA10／20／50 以現有歷史計算，首根收盤作為 seed，warmup 較短。`}else chartNote.classList.remove('show');let start=all?0:Math.max(0,full.length-70),a=full.slice(start),dates=a.map(x=>String(x.date).slice(0,4)+'-'+String(x.date).slice(4,6)+'-'+String(x.date).slice(6)),close=full.map(x=>x.close),trigger=Math.max(...full.slice(-21,-1).map(x=>x.high)),low20=Math.min(...full.slice(-21,-1).map(x=>x.low)),tr=[{x:dates,open:a.map(x=>x.open),high:a.map(x=>x.high),low:a.map(x=>x.low),close:a.map(x=>x.close),type:'candlestick',name:row.name+' ('+code+')',increasing:{line:{color:'#15966b'}},decreasing:{line:{color:'#d9534f'}}}];for(let p of [10,20,50])tr.push({x:dates,y:ema(close,p).slice(start),type:'scatter',mode:'lines',name:'EMA'+p+(shortWarmup?'（現有歷史 seed）':''),line:{width:1.5}});Plotly.react('breakoutChart',tr,{title:{text:row.name+' ('+code+')｜收盤 $'+close.at(-1).toFixed(2)+'｜20日觸發 $'+trigger.toFixed(2)+(smaUnverified?'｜SMA200未驗證':''),font:{size:14}},margin:{l:70,r:20,t:50,b:55},paper_bgcolor:'white',plot_bgcolor:'white',xaxis:{rangeslider:{visible:false},gridcolor:'#edf1f6'},yaxis:{title:'USD',gridcolor:'#edf1f6'},shapes:[{type:'line',x0:dates[0],x1:dates.at(-1),y0:trigger,y1:trigger,line:{color:'#202020',dash:'dash',width:1.5}},{type:'line',x0:dates[0],x1:dates.at(-1),y0:low20,y1:low20,line:{color:'#d9534f',dash:'dot',width:1.2}}],annotations:[{x:dates.at(-1),y:trigger,text:'前20日高點／突破觸發 $'+trigger.toFixed(2),showarrow:false,xanchor:'right',yshift:10,font:{size:10}},{x:dates.at(-1),y:low20,text:'前20日低點／回踩觀察 $'+low20.toFixed(2),showarrow:false,xanchor:'right',yshift:-10,font:{size:10}}],font:{family:'Arial,sans-serif'}},{responsive:true,displaylogo:false})}
-function drawScatter(){let xk=xsel.value,yk=ysel.value,a=D.filter(d=>!passonly.checked||coreStatus(d)==='pass'),colors=a.map(d=>coreStatus(d)==='pass'?'#14966b':coreStatus(d)==='unverified'?'#9aa6b5':d.breakout_close?'#e69a17':'#8794a7');let tr={x:a.map(d=>axisVal(d,xk)),y:a.map(d=>axisVal(d,yk)),text:a.map(d=>d.name+' ('+d.code+')'),mode:'markers',type:'scatter',marker:{size:a.map(d=>10+(topNames.has(d.name)?5:0)),color:colors,opacity:.88,line:{color:a.map(d=>topNames.has(d.name)?'#7c3aed':'white'),width:a.map(d=>topNames.has(d.name)?3:1)}},customdata:a.map(d=>[d.close,d.return_63_pct,d.adr20_pct,d.turnover50,d.best_base_pct,d.trigger_gap_pct,coreLabel(d)]),hovertemplate:'<b>%{text}</b><br>核心狀態: %{customdata[6]}<br>'+L[xk]+': %{x:.2f}<br>'+L[yk]+': %{y:.2f}<br>收盤: $%{customdata[0]:.2f}<br>63日報酬: %{customdata[1]:.1f}%<br>ADR20: %{customdata[2]:.2f}%<br>50日成交額: $%{customdata[3]:,.0f}<br>整固幅度: %{customdata[4]:.2f}%<br>距觸發: %{customdata[5]:.2f}%<extra></extra>'};Plotly.react('scatter',[tr],{margin:{l:70,r:20,t:10,b:65},paper_bgcolor:'white',plot_bgcolor:'white',xaxis:{title:L[xk],gridcolor:'#edf1f6'},yaxis:{title:L[yk],gridcolor:'#edf1f6'}},{responsive:true,displaylogo:false})}
-function drawHeat(){let a=[...D].sort(byCoreThenEma),z=a.map(d=>d.rules.map(v=>v===true?1:v===false?0:-1)),states=a.map(d=>d.rules.map((v,i)=>v===true?'通過':v===false?'未通過':i===4?'資料不足（SMA200未驗證）':'資料不足'));Plotly.react('heat',[{z,text:states,x:R,y:a.map(d=>d.name+' ('+d.code+')'),type:'heatmap',colorscale:[[0,'#e5e7eb'],[.249,'#e5e7eb'],[.25,'#f7d8d8'],[.749,'#f7d8d8'],[.75,'#d9f2e6'],[1,'#d9f2e6']],zmin:-1,zmax:1,showscale:false,hovertemplate:'%{y}<br>條件：%{x}<br>狀態：%{text}<extra></extra>',xgap:2,ygap:1}],{margin:{l:190,r:8,t:5,b:110},xaxis:{tickangle:-30,tickfont:{size:10}},yaxis:{autorange:'reversed',tickfont:{size:9}},paper_bgcolor:'white',plot_bgcolor:'white'},{responsive:true,displaylogo:false})}
-function drawBars(){let k=rankSel.value,a=D.filter(d=>d[k]!=null).sort((x,y)=>axisVal(y,k)-axisVal(x,k)).slice(0,25).reverse();Plotly.react('bars',[{x:a.map(d=>axisVal(d,k)),y:a.map(d=>d.name+' ('+d.code+')'),type:'bar',orientation:'h',marker:{color:a.map(d=>coreStatus(d)==='pass'?'#14966b':coreStatus(d)==='unverified'?'#9aa6b5':d.breakout_close?'#e69a17':'#9aa6b5')},hovertemplate:'%{y}<br>'+L[k]+': %{x:.2f}<extra></extra>'}],{margin:{l:185,r:15,t:5,b:55},xaxis:{title:L[k],gridcolor:'#edf1f6'},yaxis:{tickfont:{size:9}},paper_bgcolor:'white',plot_bgcolor:'white'},{responsive:true,displaylogo:false})}
-const cols=[['code','代號'],['name','股票全名'],['US_listing_class','類別'],['date','資料日'],['bars','K線根數'],['close','收盤'],['return_63_pct','63日報酬'],['adr20_pct','ADR20'],['turnover50','50日成交額'],['above_sma200_pct','高於SMA200'],['best_base_pct','整固幅度'],['trigger_gap_pct','距觸發'],['ema_mean_distance_pct','三線平均距離'],['core_status','核心狀態'],['validation_note','驗證註記'],['failures','未通過項目']];let sort={key:'core_status',dir:1};function renderTable(){let q=search.value.toLowerCase(),a=D.filter(d=>(!tablepass.checked||coreStatus(d)==='pass')&&(d.name+' '+d.code).toLowerCase().includes(q)).sort((x,y)=>{if(sort.key==='core_status'||sort.key==='pass_core'){let diff=coreRank(x)-coreRank(y);return (diff||emaMean(x)-emaMean(y))*sort.dir}let u=x[sort.key],v=y[sort.key];if(u==null)return 1;if(v==null)return -1;return (typeof u==='string'?String(u).localeCompare(String(v)):Number(u)-Number(v))*sort.dir});tbl.querySelector('thead').innerHTML='<tr>'+cols.map(([k,t])=>`<th data-k="${k}">${t} ↕</th>`).join('')+'</tr>';tbl.querySelector('tbody').innerHTML=a.map(d=>'<tr class="'+(topNames.has(d.name)?'top-ema-row':'')+'">'+cols.map(([k])=>{let v=d[k];if(k==='core_status'||k==='pass_core')return `<td><span class="tag ${coreClass(d)}">${coreLabel(d)}</span></td>`;if(k==='date')return `<td>${v==null||v===''?'無資料':String(v).slice(0,4)+'-'+String(v).slice(4,6)+'-'+String(v).slice(6)}</td>`;if(k==='validation_note')return `<td>${v||'—'}</td>`;if(k==='failures')return `<td>${Array.isArray(v)?v.join('、'):v||'—'}</td>`;return `<td>${format(k,v)}</td>`}).join('')+'</tr>').join('');tbl.querySelectorAll('th').forEach(th=>th.onclick=()=>{if(sort.key===th.dataset.k)sort.dir*=-1;else{sort.key=th.dataset.k;sort.dir=th.dataset.k==='core_status'?1:1}renderTable()})}
+function ema(a,p){if(a.length<p)return null;let o=[a[0]],k=2/(p+1);for(let i=1;i<a.length;i++)o.push(a[i]*k+o[i-1]*(1-k));return o}function drawBreakout(){let code=chartSel.value,all=chartAll.checked,full=B[code]||[],row=D.find(x=>x.code===code),chartNote=document.getElementById('chartNotice');if(!full.length||!row){chartNote.classList.remove('show');return}let barCount=historyBars(row,full),start=all?0:Math.max(0,full.length-70),a=full.slice(start),dates=a.map(x=>String(x.date).slice(0,4)+'-'+String(x.date).slice(4,6)+'-'+String(x.date).slice(6)),close=full.map(x=>x.close),missing=missingForChart(row,full),emaPeriods=[10,20,50].filter(p=>full.length>=p&&finiteNumber(row['ema'+p])!==null),triggerVerified=full.length>=21&&finiteNumber(row.prior20_high)!==null&&(row.breakout_close===true||row.breakout_close===false),lowVerified=full.length>=21&&finiteNumber(row.prior20_low)!==null&&(row.above_prior20_low===true||row.above_prior20_low===false);if(missing.length){chartNote.classList.add('show');chartNote.textContent=`資料不足／未驗證：${missing.join('；')}。${row.name} 可用 ${barCount} 根日 K；未達各自樣本門檻的 EMA、前20日高低點與突破均不繪製或推估。`}else chartNote.classList.remove('show');let tr=[{x:dates,open:a.map(x=>x.open),high:a.map(x=>x.high),low:a.map(x=>x.low),close:a.map(x=>x.close),type:'candlestick',name:row.name+' ('+code+')',increasing:{line:{color:'#15966b'}},decreasing:{line:{color:'#d9534f'}}}];for(let p of emaPeriods){let series=ema(close,p);if(series)tr.push({x:dates,y:series.slice(start),type:'scatter',mode:'lines',name:'EMA'+p,line:{width:1.5}})}let shapes=[],annotations=[],title=[row.name+' ('+code+')','收盤 $'+close.at(-1).toFixed(2)];if(triggerVerified){let trigger=finiteNumber(row.prior20_high);shapes.push({type:'line',x0:dates[0],x1:dates.at(-1),y0:trigger,y1:trigger,line:{color:'#202020',dash:'dash',width:1.5}});annotations.push({x:dates.at(-1),y:trigger,text:'前20日高點／突破觸發 $'+trigger.toFixed(2),showarrow:false,xanchor:'right',yshift:10,font:{size:10}});title.push('20日觸發 $'+trigger.toFixed(2))}else title.push('20日觸發未驗證');if(lowVerified){let low20=finiteNumber(row.prior20_low);shapes.push({type:'line',x0:dates[0],x1:dates.at(-1),y0:low20,y1:low20,line:{color:'#d9534f',dash:'dot',width:1.2}});annotations.push({x:dates.at(-1),y:low20,text:'前20日低點／回踩觀察 $'+low20.toFixed(2),showarrow:false,xanchor:'right',yshift:-10,font:{size:10}})}else title.push('20日低點未驗證');Plotly.react('breakoutChart',tr,{title:{text:title.join('｜'),font:{size:14}},margin:{l:70,r:20,t:50,b:55},paper_bgcolor:'white',plot_bgcolor:'white',xaxis:{rangeslider:{visible:false},gridcolor:'#edf1f6'},yaxis:{title:'USD',gridcolor:'#edf1f6'},shapes:shapes,annotations:annotations,font:{family:'Arial,sans-serif'}},{responsive:true,displaylogo:false})}
+function drawScatter(){let xk=xsel.value,yk=ysel.value,a=D.filter(d=>(!passonly.checked||coreStatus(d)==='pass')&&axisVal(d,xk)!==null&&axisVal(d,yk)!==null),colors=a.map(d=>coreStatus(d)==='pass'?'#14966b':coreStatus(d)==='unverified'?'#9aa6b5':d.breakout_close===true?'#e69a17':'#8794a7');let tr={x:a.map(d=>axisVal(d,xk)),y:a.map(d=>axisVal(d,yk)),text:a.map(d=>d.name+' ('+d.code+')'),mode:'markers',type:'scatter',marker:{size:a.map(d=>10+(topNames.has(d.name)?5:0)),color:colors,opacity:.88,line:{color:a.map(d=>topNames.has(d.name)?'#7c3aed':'white'),width:a.map(d=>topNames.has(d.name)?3:1)}},customdata:a.map(d=>[format('close',d.close),format('return_63_pct',d.return_63_pct),format('adr20_pct',d.adr20_pct),format('turnover50',d.turnover50),format('best_base_pct',d.best_base_pct),format('trigger_gap_pct',d.trigger_gap_pct),coreLabel(d)]),hovertemplate:'<b>%{text}</b><br>核心狀態: %{customdata[6]}<br>'+L[xk]+': %{x:.2f}<br>'+L[yk]+': %{y:.2f}<br>收盤: %{customdata[0]}<br>63日報酬: %{customdata[1]}<br>ADR20: %{customdata[2]}<br>50日成交額: %{customdata[3]}<br>整固幅度: %{customdata[4]}<br>距觸發: %{customdata[5]}<extra></extra>'};Plotly.react('scatter',[tr],{margin:{l:70,r:20,t:10,b:65},paper_bgcolor:'white',plot_bgcolor:'white',xaxis:{title:L[xk],gridcolor:'#edf1f6'},yaxis:{title:L[yk],gridcolor:'#edf1f6'}},{responsive:true,displaylogo:false})}
+function drawHeat(){let a=[...D].sort(byCoreThenEma),z=a.map(d=>d.rules.map(v=>v===true?1:v===false?0:-1)),states=a.map(d=>d.rules.map(v=>v===true?'通過':v===false?'未通過':'未驗證'));Plotly.react('heat',[{z,text:states,x:R,y:a.map(d=>d.name+' ('+d.code+')'),type:'heatmap',colorscale:[[0,'#e5e7eb'],[.249,'#e5e7eb'],[.25,'#f7d8d8'],[.749,'#f7d8d8'],[.75,'#d9f2e6'],[1,'#d9f2e6']],zmin:-1,zmax:1,showscale:false,hovertemplate:'%{y}<br>條件：%{x}<br>狀態：%{text}<extra></extra>',xgap:2,ygap:1}],{margin:{l:190,r:8,t:5,b:110},xaxis:{tickangle:-30,tickfont:{size:10}},yaxis:{autorange:'reversed',tickfont:{size:9}},paper_bgcolor:'white',plot_bgcolor:'white'},{responsive:true,displaylogo:false})}
+function drawBars(){let k=rankSel.value,a=D.filter(d=>axisVal(d,k)!==null).sort((x,y)=>axisVal(y,k)-axisVal(x,k)).slice(0,25).reverse();Plotly.react('bars',[{x:a.map(d=>axisVal(d,k)),y:a.map(d=>d.name+' ('+d.code+')'),type:'bar',orientation:'h',marker:{color:a.map(d=>coreStatus(d)==='pass'?'#14966b':coreStatus(d)==='unverified'?'#9aa6b5':d.breakout_close===true?'#e69a17':'#9aa6b5')},hovertemplate:'%{y}<br>'+L[k]+': %{x:.2f}<extra></extra>'}],{margin:{l:185,r:15,t:5,b:55},xaxis:{title:L[k],gridcolor:'#edf1f6'},yaxis:{tickfont:{size:9}},paper_bgcolor:'white',plot_bgcolor:'white'},{responsive:true,displaylogo:false})}
+const cols=[['code','代號'],['name','股票全名'],['US_listing_class','類別'],['date','資料日'],['bars','K線根數'],['close','收盤'],['return_63_pct','63日報酬'],['adr20_pct','ADR20'],['turnover50','50日成交額'],['above_sma200_pct','高於SMA200'],['best_base_pct','整固幅度'],['trigger_gap_pct','距觸發'],['breakout_close','收盤突破'],['ema_mean_distance_pct','三線平均距離'],['core_status','核心狀態'],['unverified_conditions','未驗證項目'],['validation_note','驗證註記'],['failures','未通過項目']];let sort={key:'core_status',dir:1};function renderTable(){let q=search.value.toLowerCase(),a=D.filter(d=>(!tablepass.checked||coreStatus(d)==='pass')&&(d.name+' '+d.code).toLowerCase().includes(q)).sort((x,y)=>{if(sort.key==='core_status'||sort.key==='pass_core')return byCoreThenEma(x,y);let u=x[sort.key],v=y[sort.key],un=u==null||u==='',vn=v==null||v==='';if(un&&vn)return 0;if(un)return 1;if(vn)return -1;return (typeof u==='string'?String(u).localeCompare(String(v)):Number(u)-Number(v))*sort.dir});tbl.querySelector('thead').innerHTML='<tr>'+cols.map(([k,t])=>`<th data-k="${k}">${t} ↕</th>`).join('')+'</tr>';tbl.querySelector('tbody').innerHTML=a.map(d=>'<tr class="'+(topNames.has(d.name)?'top-ema-row':'')+'">'+cols.map(([k])=>{let v=d[k];if(k==='core_status'||k==='pass_core')return `<td><span class="tag ${coreClass(d)}">${coreLabel(d)}</span></td>`;if(k==='breakout_close')return `<td>${v===true?'是':v===false?'否':'未驗證'}</td>`;if(k==='date')return `<td>${v==null||v===''?'未驗證':String(v).slice(0,4)+'-'+String(v).slice(4,6)+'-'+String(v).slice(6)}</td>`;if(k==='validation_note')return `<td>${v||'—'}</td>`;if(k==='unverified_conditions')return `<td>${v||'—'}</td>`;if(k==='failures')return `<td>${Array.isArray(v)?v.join('、'):v||'—'}</td>`;return `<td>${format(k,v)}</td>`}).join('')+'</tr>').join('');tbl.querySelectorAll('th').forEach(th=>th.onclick=()=>{if(th.dataset.k==='core_status'||th.dataset.k==='pass_core'){sort.key=th.dataset.k;sort.dir=1}else if(sort.key===th.dataset.k)sort.dir*=-1;else{sort.key=th.dataset.k;sort.dir=1}renderTable()})}
 chartSel.innerHTML=D.map(d=>`<option value="${d.code}">${d.name} (${d.code})</option>`).join('');chartSel.value=D.find(d=>coreStatus(d)==='pass')?.code||D[0].code;chartSel.onchange=drawBreakout;chartAll.onchange=drawBreakout;xsel.onchange=ysel.onchange=passonly.onchange=drawScatter;rankSel.onchange=drawBars;search.oninput=tablepass.onchange=renderTable;drawTop();drawBreakout();drawScatter();drawHeat();drawBars();renderTable();
 </script></body></html>'''
     for key, value in {
