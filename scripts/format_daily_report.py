@@ -2,6 +2,7 @@
 """Render a Traditional Chinese daily report table from validated Futu metrics CSV."""
 import argparse
 import csv
+import json
 import math
 from pathlib import Path
 
@@ -139,11 +140,11 @@ def display_date(value):
     return f'{text[:4]}-{text[4:6]}-{text[6:]}' if len(text) == 8 and text.isdigit() else '未驗證'
 
 
-def render(rows, as_of, expected, dashboard_url=""):
-    if len(rows) != expected:
+def render(rows, as_of, expected=None, dashboard_url="", screen_summary=None):
+    if expected is not None and len(rows) != expected:
         raise ValueError(f"Expected {expected} metrics rows, received {len(rows)}")
     codes = [r.get("code", "").strip() for r in rows]
-    if not all(codes) or len(set(codes)) != expected:
+    if not all(codes) or len(set(codes)) != len(rows):
         raise ValueError("Missing or duplicate stock codes in metrics CSV")
 
     # Core passes are first; failures and unverified rows share the second tier.
@@ -161,10 +162,17 @@ def render(rows, as_of, expected, dashboard_url=""):
     normal = sum(eligible(r) for r in rows)
     suspended = len(rows) - normal
     common_dates = sorted({display_date(r.get("analysis_date", "")) for r in rows if eligible(r) and r.get("analysis_date")})
+    screen_line = ""
+    if screen_summary:
+        raw_count = screen_summary.get("screener_total", "未驗證")
+        excluded_count = screen_summary.get("excluded_count", "未驗證")
+        screen_line = (f"Futu 本輪市場篩選器找到 **{raw_count} 檔初篩候選**；"
+                       f"經股票／證券類別檢核與排除後，分析 **{len(rows)} 檔普通股／ADR**（另排除 {excluded_count} 檔 ETF、非股票類或明確非普通股標的）。")
     lines = [
         f"## Futu 美股突破觀察 — {as_of}",
         "",
-        f"覆蓋 **{len(rows)} 檔使用者設定的普通股／ADR**（正常 **{normal}**、停牌 **{suspended}**）；正常交易核心條件完整通過 **{passed} 檔**（另有 **{unverified} 檔**核心未驗證）；收盤高於此前 20 日高點 **{breakouts} 檔**（僅計入正常且已驗證結果）。共同分析日：**{', '.join(common_dates) if common_dates else as_of}**。",
+        screen_line or f"本輪動態篩選並完成分析 **{len(rows)} 檔普通股／ADR**（非固定 53 檔清單）。",
+        f"本輪已分析 **{len(rows)} 檔動態篩選出的普通股／ADR**（正常 **{normal}**、停牌 **{suspended}**）；正常交易核心條件完整通過 **{passed} 檔**（另有 **{unverified} 檔**核心未驗證）；收盤高於此前 20 日高點 **{breakouts} 檔**（僅計入正常且已驗證結果）。共同分析日：**{', '.join(common_dates) if common_dates else as_of}**。",
         "",
         "| 股票全名（代號） | 資料日 | 交易狀態 | K線根數 | 收盤 | 63日報酬 | ADR20 | 50日均成交額 | 高於SMA200 | 最窄整固 | 距前20日高點 | 收盤突破 | EMA三線均距 | 核心條件 | 未驗證項目 | 驗證註記 | 未通過條件 |",
         "|---|---|:---:|---:|---:|---:|---:|---:|---:|---:|---:|:---:|---:|:---:|---|---|---|",
@@ -194,7 +202,7 @@ def render(rows, as_of, expected, dashboard_url=""):
         )
     lines.extend([
         "",
-        f"**說明：** 停牌列保留自身最後日線日期與歷史收盤價；停牌時所有當前指標均未驗證、不列假失敗，核心／突破統計只計正常交易且符合驗證條件的列。ADR20 為平均日內振幅，不是 Wilder ATR；負的「距前20日高點」代表收盤高於該高點。收盤越過前高僅是價位事件，未確認成交量或後續延續。依使用者授權，固定清單中每檔只要至少 1 根有效日 K 即保留；但63日報酬須64根、ADR20須20根、50日均成交額須50根且資料完整、SMA200須200根、整固須5根、前20日高低點及突破須21根，EMA10／20／50亦各須相應根數。未達各自門檻者一律標示「未驗證」，不以較短歷史代替，且不計入完整核心通過。此清單更新既有 {len(rows)} 檔，不是全美股市值篩選。",
+        f"**篩選及資料說明：** 候選池由本輪 Futu 螢幕動態產生，寬鬆預篩為市值>$5bn、股價>$5、60日回報≥18%（涵蓋 63 日目標的預篩緩衝）、50日均成交額>$5m、20日平均振幅≥3%；最後依 K 線精算 63日回報≥20%、ADR20>3.5%、整固5–39日且幅度<8%、收盤不低於前20日低點、SMA200上方幅度≤60%。未達各項歷史樣本數者顯示「未驗證」，不以較短歷史代替，亦不計入完整核心通過；63日報酬須64根、50日均成交額須50根且資料完整、SMA200須200根、整固至少5根、前20日高低點需21根。EMA10／20／50供排序，ADR20不是 Wilder ATR。這是依 Futu 預篩條件動態挑出的候選池，不是固定 53 檔，也不代表對所有市值>$5bn股票逐一抓取日線；收盤越過前高僅是價位事件，未確認成交量或後續延續。",
         "",
     ])
     if dashboard_url:
@@ -206,13 +214,15 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--metrics", required=True)
     ap.add_argument("--as-of", required=True, help="YYYY-MM-DD")
-    ap.add_argument("--expected-count", type=int, default=53)
+    ap.add_argument("--expected-count", type=int, help="Optional exact row count; omit for a dynamic universe")
     ap.add_argument("--output", help="Write Markdown to this path; otherwise print to stdout")
     ap.add_argument("--dashboard-url", default="", help="Optional public dashboard URL")
+    ap.add_argument("--screen-summary", help="JSON summary written by prepare_dynamic_universe.py")
     args = ap.parse_args()
     with open(args.metrics, newline="", encoding="utf-8-sig") as stream:
         rows = list(csv.DictReader(stream))
-    report = render(rows, args.as_of, args.expected_count, args.dashboard_url)
+    summary = json.loads(Path(args.screen_summary).read_text(encoding="utf-8")) if args.screen_summary else None
+    report = render(rows, args.as_of, args.expected_count, args.dashboard_url, summary)
     if args.output:
         path = Path(args.output)
         path.parent.mkdir(parents=True, exist_ok=True)

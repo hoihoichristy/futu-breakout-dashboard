@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Recalculate a fixed reviewed Futu universe; never add or remove symbols."""
+"""Recalculate either a fixed reviewed Futu universe or an explicit current-run screen universe."""
 import argparse
 import csv
 import json
@@ -26,13 +26,13 @@ def normalize_date(value):
     return text[:8]
 
 
-def load_universe(path, expected):
+def load_universe(path, expected=None):
     with open(path, newline='', encoding='utf-8-sig') as stream:
         rows = list(csv.DictReader(stream))
     required = {'code', 'name', 'Futu_security_type', 'US_listing_class'}
     if not rows or not required.issubset(rows[0]):
         raise ValueError(f'Universe CSV must contain: {", ".join(sorted(required))}')
-    if len(rows) != expected:
+    if expected is not None and len(rows) != expected:
         raise ValueError(f'Expected {expected} reviewed symbols; universe has {len(rows)}')
     codes = [r['code'].strip() for r in rows]
     if len(set(codes)) != len(codes):
@@ -98,18 +98,25 @@ def main():
     ap.add_argument('--universe', required=True)
     ap.add_argument('--raw-dir', required=True)
     ap.add_argument('--output', required=True, help='Temporary output, not the live repo file')
-    ap.add_argument('--expected-count', type=int, default=53)
+    ap.add_argument('--expected-count', type=int, help='Optional expected count; omit to infer the input CSV size')
     ap.add_argument('--min-bars', type=int, default=200)
+    ap.add_argument('--dynamic-screen', action='store_true',
+                    help='Allow the run-specific Futu-screened universe; insufficient metrics remain unverified')
     ap.add_argument('--metrics-output', help='Optional validated metrics CSV')
     ap.add_argument('--quote-status-file', help="This run's captured Futu QMMM quote status")
     ap.add_argument('--started-epoch', type=float, help='Run start for status freshness checks')
     args = ap.parse_args()
 
     universe = load_universe(args.universe, args.expected_count)
+    expected_count = len(universe)
     suspensions = verified_suspensions(universe, args.quote_status_file, args.started_epoch)
     rows, bars_by_code, latest_dates = [], {}, {}
     for meta in universe:
-        required_bars = minimum_bars(meta['code'], args.min_bars)
+        if args.dynamic_screen:
+            # The input universe must be the output of prepare_dynamic_universe.py for this run.
+            required_bars = max(1, args.min_bars)
+        else:
+            required_bars = minimum_bars(meta['code'], args.min_bars)
         bars, latest_date = load_symbol_bars(args.raw_dir, meta['code'], required_bars)
         latest_dates[meta['code']] = latest_date
         row = analyzer.analyze(meta['name'], bars)
@@ -176,8 +183,8 @@ def main():
         writer.writerows(rows)
         stream.flush()
         checked_rows, excluded = dashboard.load_metrics(stream.name, common_adr_only=True)
-    if excluded or len(checked_rows) != args.expected_count:
-        raise ValueError(f'Security-class validation changed universe: kept={len(checked_rows)}, excluded={len(excluded)}')
+    if excluded or len(checked_rows) != expected_count:
+        raise ValueError(f'Security-class validation changed universe: kept={len(checked_rows)}, expected={expected_count}, excluded={len(excluded)}')
 
     if args.metrics_output:
         metrics_path = Path(args.metrics_output)
