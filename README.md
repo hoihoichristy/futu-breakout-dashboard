@@ -4,13 +4,13 @@ Self-contained Futu U.S. ordinary-share/ADR technical dashboard.
 
 - **Dynamic candidate universe:** each daily update starts from a paginated Futu U.S. screen; the old 53-symbol `universe.csv` remains an archival baseline and is not the daily scan universe. Market-data K-lines are fetched only for candidates that meet the documented prefilter.
 - **Screen prefilter:** U.S.-listed securities, market cap >$5 billion, price >$5, Futu 60-session return ≥18% as a recall buffer, 50-session average dollar turnover >$5 million, and 20-session average amplitude ≥3% as a loose volatility proxy. Exact 63-session return ≥20% and ADR20 >3.5% are recalculated from fresh K-lines; detailed consolidation, SMA200, prior-low, and EMA conditions are also checked.
-- **Security type:** Futu instrument type and Futu security-name descriptors are used to retain ordinary shares/ADRs while excluding ETFs and identifiable preferred/CDI/fund/derivative classes. Unverified labels are excluded and reported.
+- **Security type:** Futu instrument type and Futu security-name descriptors are used to retain ordinary shares/ADRs while excluding ETFs and identifiable preferred/CDI/fund/derivative/limited-partnership classes; excluded symbols and reasons are recorded.
 - **Source:** Futu market screener, security reference data, and forward-adjusted regular-session daily K-lines retrieved through the Manus Futu connector. No substitution with Yahoo or another market-data source.
 - **Schedule:** 06:00 Asia/Hong_Kong Tuesday–Saturday, after the previous U.S. session. Manus refreshes `index.html`; GitHub Pages deploys `main:/`.
 - **Page:** https://hoihoichristy.github.io/futu-breakout-dashboard/
 - **Current-page timing:** the existing page remains its last successfully published snapshot until a new dynamic-screen run completes and its exact HTML hash is verified.
 - **Short history:** unavailable indicators remain null/unverified using their original lookbacks; they are never replaced by shorter estimates and cannot count as a complete core pass.
-- **Freshness:** active symbols must agree on their latest daily date. Missing symbols, invalid OHLC, failed source calls, ordinary date mismatches, and uncertain security classes abort the publication.
+- **Freshness:** active symbols must agree on their latest daily date. Missing symbols, invalid OHLC, failed source calls, ordinary date mismatches, and missing Futu security-type data abort the publication.
 - **QMMM-only suspension exception:** the user authorized retaining QMMM historical candles/date only when a fresh Futu quote confirms `SUSPENDED`. Its current metrics remain unverified and are excluded from current rankings and pass/breakout counts.
 - **Deployment verification:** the publisher checks the exact live HTML SHA-256. Private run logs and raw source results are Git-ignored and never published.
 
