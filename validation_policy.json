@@ -1,0 +1,8 @@
+{
+  "default_min_bars": 200,
+  "symbol_min_bars": {
+    "US.PS": 64
+  },
+  "short_history_behavior": "Keep available indicators; SMA200 is unavailable below 200 bars and never counts as a fully verified core pass.",
+  "authorization": "User authorized US.PS-only short-history exception on 2026-10-08. No changes to the 53-symbol universe."
+}

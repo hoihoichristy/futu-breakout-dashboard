@@ -45,7 +45,7 @@ python3 scripts/capture_latest_futu_result.py \
   >> "$LOG_PATH" 2>&1
 ```
 
-If the tool response gives an exact saved result path, add `--source-file '/path/from/result.json'`. The helper rejects results created before this run, duplicate result files, API errors, and histories shorter than 200 bars. Do not continue to publish if any symbol call/capture fails.
+If the tool response gives an exact saved result path, add `--source-file '/path/from/result.json'`. The helper rejects results created before this run, duplicate result files, API errors, and histories below the reviewed per-symbol minimum in `validation_policy.json`. **Only US.PS has a short-history exception: at least 64 unique daily bars, using all available history; all other 52 symbols still require at least 200.** Do not continue to publish if any symbol call/capture fails. Do not lower a global threshold or extend the exception to any other symbol without authorization.
 
 ## 3. Rebuild and validate
 
@@ -56,7 +56,7 @@ python3 scripts/rebuild_futu_dashboard.py \
   --expected-count 53 2>&1 | tee -a "$LOG_PATH"
 ```
 
-The rebuild recalculates the same screen metrics and charts from Futu OHLCV; it preserves each symbol's reviewed security class. It refuses to publish unless all 53 files are present, histories are sufficient, the latest bar dates agree, and the class filter still retains all 53. It writes the validated daily table to `metrics.csv`. Use the returned JSON `as_of` value as the publication date, then render the user-facing table:
+The rebuild recalculates the same screen metrics and charts from Futu OHLCV; it preserves each symbol's reviewed security class. It refuses to publish unless all 53 files are present, histories meet the same per-symbol policy, the latest bar dates agree, and the class filter still retains all 53. Below 200 bars, US.PS has `above_sma200_pct=null`, `core_status=unverified`, and `pass_core=false`: never replace SMA200 with a shorter-history mean or count it as a full core pass. The dashboard/report must show actual bar count, short EMA warm-up caveat and unverified SMA200 state. The normal 200-bar calculation automatically resumes when enough bars become available. It writes the validated daily table to `metrics.csv`. Use the returned JSON `as_of` value as the publication date, then render the user-facing table:
 
 ```bash
 python3 scripts/format_daily_report.py \

@@ -11,6 +11,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from validation_policy import minimum_bars
 
 
 def main():
@@ -23,6 +24,7 @@ def main():
     ap.add_argument("--source-file", help="Optional exact result path returned by the MCP call")
     ap.add_argument("--min-bars", type=int, default=200)
     args = ap.parse_args()
+    required_bars = minimum_bars(args.symbol, args.min_bars)
 
     raw_dir = Path(args.raw_dir)
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -50,8 +52,8 @@ def main():
                 problems.append(f"{path.name}: ret_code={ret_code}")
                 continue
             bars = current.get("data", {}).get("kline_list", [])
-            if len(bars) < args.min_bars:
-                problems.append(f"{path.name}: only {len(bars)} bars")
+            if len({str(bar['date']) for bar in bars}) < required_bars:
+                problems.append(f"{path.name}: only {len(bars)} bars; minimum={required_bars}")
                 continue
             selected, payload = path, current
             break
@@ -69,6 +71,8 @@ def main():
     manifest[args.symbol] = str(selected.resolve())
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(f"captured {args.symbol}: {len(bars)} bars; latest={latest.get('date')}; source={selected.name}")
+    if len(bars) < 200:
+        print(f"short-history exception {args.symbol}: minimum={required_bars}; SMA200 unavailable, not a verified core pass")
 
 
 if __name__ == "__main__":

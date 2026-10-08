@@ -17,6 +17,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import analyze_futu_bars as analyzer  # noqa: E402
 import build_interactive_dashboard as dashboard  # noqa: E402
+from validation_policy import minimum_bars
 
 
 def normalize_date(value):
@@ -78,12 +79,24 @@ def main():
     universe = load_universe(args.universe, args.expected_count)
     rows, bars_by_code, latest_dates = [], {}, {}
     for meta in universe:
-        bars, latest_date = load_symbol_bars(args.raw_dir, meta["code"], args.min_bars)
+        required_bars = minimum_bars(meta["code"], args.min_bars)
+        bars, latest_date = load_symbol_bars(args.raw_dir, meta["code"], required_bars)
         latest_dates[meta["code"]] = latest_date
         row = analyzer.analyze(meta["name"], bars)
         row["code"] = meta["code"]
         row["Futu_security_type"] = meta["Futu_security_type"]
         row["US_listing_class"] = meta["US_listing_class"]
+        row["core_status"] = "pass" if row["pass_core"] else "fail"
+        row["unverified_conditions"] = ""
+        row["validation_note"] = ""
+        if len(bars) < 200:
+            row["above_sma200_pct"] = None
+            row["pass_core"] = False
+            row["core_status"] = "unverified"
+            row["unverified_conditions"] = "SMA200"
+            row["validation_note"] = (f"{meta['code']} 只有 {len(bars)} 根日線；"
+                                      "使用現有歷史計算可用指標，SMA200 未驗證；EMA 熱身期較短。")
+            row["failures"] = [v for v in row["failures"] if v != "200d cap"] + ["SMA200 unavailable"]
         rows.append(row)
         bars_by_code[meta["code"]] = [{
             "date": normalize_date(b["date"]), "open": float(b["open"]),
@@ -116,7 +129,8 @@ def main():
                 row = dict(checked)
                 row["failures"] = "; ".join(failure for failure in
                                              next(item["failures"] for item in rows if item["code"] == row["code"]))
-                row["rules"] = "; ".join("pass" if value else "fail" for value in row.get("rules", []))
+                row["rules"] = "; ".join("unverified" if value is None else "pass" if value else "fail"
+                                         for value in row.get("rules", []))
                 writer.writerow(row)
 
     as_of = datetime.strptime(next(iter(set(latest_dates.values()))), "%Y%m%d").strftime("%Y-%m-%d")
@@ -132,6 +146,7 @@ def main():
         "status": "built", "as_of": as_of, "symbols": len(checked_rows),
         "core_pass": sum(bool(r["pass_core"]) for r in checked_rows),
         "price_breakouts": sum(bool(r["breakout_close"]) for r in checked_rows),
+        "unverified_symbols": [r["code"] for r in checked_rows if r.get("core_status") == "unverified"],
         "bars_per_symbol_min": min(len(v) for v in bars_by_code.values()),
         "output": str(out),
         "metrics_output": args.metrics_output,

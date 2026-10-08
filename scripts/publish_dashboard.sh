@@ -56,14 +56,16 @@ git -C "$REPO_DIR" push origin "$BRANCH"
 COMMIT=$(git -C "$REPO_DIR" rev-parse --short HEAD)
 echo "Pushed commit $COMMIT; GitHub Pages should rebuild from $BRANCH:/ ."
 
-# Pages deployment is asynchronous. Verify the public page gets the new date;
+# Pages deployment is asynchronous. Verify the exact new HTML, not only its date;
 # don't roll back a successful push if the CDN/build is still propagating.
+EXPECTED_SHA=$(sha256sum "$HTML" | cut -d ' ' -f 1)
 for attempt in $(seq 1 12); do
   tmp=$(mktemp)
   if curl -fsSL --max-time 20 -H 'Cache-Control: no-cache' \
-      "${PAGES_URL}?refresh=$(date +%s%N)" -o "$tmp" 2>/dev/null && grep -Fq "$AS_OF" "$tmp"; then
+      "${PAGES_URL}?refresh=$(date +%s%N)" -o "$tmp" 2>/dev/null && \
+      [[ "$(sha256sum "$tmp" | cut -d ' ' -f 1)" == "$EXPECTED_SHA" ]]; then
     rm -f "$tmp"
-    echo "Verified live Pages content for $AS_OF: $PAGES_URL"
+    echo "Verified exact live Pages SHA-256 $EXPECTED_SHA for $AS_OF: $PAGES_URL"
     exit 0
   fi
   rm -f "$tmp"
