@@ -79,6 +79,16 @@ python3 scripts/capture_latest_futu_result.py \
   >> "$LOG_PATH" 2>&1
 ```
 
+After every successful capture, run the checkpoint auditor before the next request; it validates the BOM-safe universe, manifest keys, exact source freshness/identity, and symbol JSON files, then records the exact remaining count and next symbols:
+
+```bash
+python3 scripts/check_dynamic_capture_progress.py \
+  --universe "$RUN_DIR/universe.csv" --raw-dir "$RAW_DIR/bars" \
+  --started-epoch "$STARTED_EPOCH" --log-path "$LOG_PATH" --show-next 10
+```
+
+Do not voluntarily stop the current execution merely because the universe is large or the remaining calls appear time-consuming; continue the required per-symbol Futu request → immediate capture → checkpoint cycle until `status=COMPLETE`, then run the final full data/date audit. If the host enforces an execution boundary, leave the run explicitly `INCOMPLETE`, retain the same run state and manifest, and report the exact next-symbol queue; never claim completion or begin downstream stages. A later explicitly authorized recovery must resume this exact run and recompute pending from the manifest, not replay captured codes.
+
 The dynamic flag is valid only for symbols in this run's generated screen CSV. One or more valid bars may be retained, but missing indicator histories stay null/“未驗證”; they never count as complete matches. A missing result, API error, invalid OHLC or capture failure stops the update. Never reuse prior-run results, backfill fabricated prices, shorten lookbacks, or run MCP calls inside a shell/Python loop.
 
 ## 5. Rebuild, exact rules and consistency checks
